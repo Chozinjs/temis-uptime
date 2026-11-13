@@ -1,0 +1,27 @@
+name: uptime
+# Monitor externo da Têmis (auditoria 13/11): roda fora da VPS. Se a API, o banco
+# ou alguma sessão do WhatsApp cair, o job falha e o GitHub avisa o dono por e-mail.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+concurrency: uptime
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Conferir /health (3 tentativas)
+        run: |
+          for i in 1 2 3; do
+            body=$(curl -s -m 20 https://temis-api.duckdns.org/health || true)
+            if echo "$body" | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          ok = d.get("status")=="ok" and d.get("api")=="ok" and d.get("banco")=="ok" and d.get("alertas")=="open"
+          ok = ok and all(v=="open" for v in (d.get("whatsappSessoes") or {}).values())
+          sys.exit(0 if ok else 1)'; then echo "ok: $body"; exit 0; fi
+            echo "tentativa $i falhou: ${body:-sem resposta}"; sleep 40
+          done
+          echo "::error::Têmis fora do ar ou WhatsApp desconectado: ${body:-sem resposta}"
+          exit 1
