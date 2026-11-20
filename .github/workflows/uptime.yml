@@ -1,16 +1,29 @@
 name: uptime
 # Monitor externo da Têmis (auditoria 13/11): roda fora da VPS. Se a API, o banco
 # ou alguma sessão do WhatsApp cair, o job falha e o GitHub avisa o dono por e-mail.
+# Desde 20/11: quando o job falha, também posta um aviso no Slack (#temis-alertas).
+# Execução normal não posta nada. Repositório público: o aviso e os logs não levam
+# segredo nem dado de cliente.
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      teste_alerta:
+        description: "Falhar de propósito para testar o aviso no Slack"
+        type: boolean
+        default: false
 concurrency: uptime
 jobs:
   health:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Teste do aviso (falha de propósito)
+        if: ${{ inputs.teste_alerta }}
+        run: |
+          echo "Teste do aviso no Slack: falha de propósito, a API não foi conferida."
+          exit 1
       - name: Conferir /health (3 tentativas)
         run: |
           for i in 1 2 3; do
@@ -25,3 +38,21 @@ jobs:
           done
           echo "::error::Têmis fora do ar ou WhatsApp desconectado: ${body:-sem resposta}"
           exit 1
+      - name: Avisar no Slack (só em falha)
+        if: ${{ failure() }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_TEMIS_ALERTAS }}
+          TESTE: ${{ inputs.teste_alerta }}
+          LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "Sem webhook configurado: nada foi postado."
+            exit 0
+          fi
+          hora=$(TZ=America/Sao_Paulo date +%H:%M)
+          prefixo=""
+          if [ "$TESTE" = "true" ]; then prefixo="TESTE, pode ignorar. "; fi
+          texto="${prefixo}Têmis: o monitor externo falhou às ${hora} (horário de Brasília). Execução: ${LINK}"
+          corpo=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$texto")
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -X POST -H 'Content-Type: application/json' --data "$corpo" "$SLACK_WEBHOOK" || true)
+          echo "Slack: HTTP ${codigo:-sem resposta}"
