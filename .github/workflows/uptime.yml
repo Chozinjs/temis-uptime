@@ -24,19 +24,22 @@ jobs:
         run: |
           echo "Teste do aviso no Slack: falha de propósito, a API não foi conferida."
           exit 1
+      # O log deste repositório é público: registra só "ok" ou "falhou" e o código HTTP.
+      # O corpo do /health (nomes de sessão do WhatsApp e demais campos) não é escrito.
       - name: Conferir /health (3 tentativas)
         run: |
           for i in 1 2 3; do
-            body=$(curl -s -m 20 https://temis-api.duckdns.org/health || true)
-            if echo "$body" | python3 -c '
+            rm -f /tmp/health.json
+            codigo=$(curl -s -m 20 -o /tmp/health.json -w '%{http_code}' https://temis-api.duckdns.org/health || true)
+            if [ -s /tmp/health.json ] && python3 -c '
           import json,sys
-          d=json.load(sys.stdin)
+          d=json.load(open("/tmp/health.json"))
           ok = d.get("status")=="ok" and d.get("api")=="ok" and d.get("banco")=="ok" and d.get("alertas")=="open"
           ok = ok and all(v=="open" for v in (d.get("whatsappSessoes") or {}).values())
-          sys.exit(0 if ok else 1)'; then echo "ok: $body"; exit 0; fi
-            echo "tentativa $i falhou: ${body:-sem resposta}"; sleep 40
+          sys.exit(0 if ok else 1)' 2>/dev/null; then echo "ok (HTTP ${codigo:-000})"; exit 0; fi
+            echo "tentativa $i falhou (HTTP ${codigo:-000})"; sleep 40
           done
-          echo "::error::Têmis fora do ar ou WhatsApp desconectado: ${body:-sem resposta}"
+          echo "::error::Têmis fora do ar ou WhatsApp desconectado (HTTP ${codigo:-000}). O corpo da resposta não é registrado aqui: confira no servidor."
           exit 1
       - name: Avisar no Slack (só em falha)
         if: ${{ failure() }}
